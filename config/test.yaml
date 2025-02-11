@@ -1,0 +1,15 @@
+storage:
+  data_dir: "./test_data"
+  max_size_mb: 100
+  hints_dir: "./test_data/hints"
+cluster:
+  node_id: "test-node-1"
+  nodes:
+    - id: "test-node-1"
+      address: "localhost:8080"
+    - id: "test-node-2"
+      address: "localhost:8081"
+replication:
+  factor: 3
+  write_quorum: 2
+  heartbeat_interval: "5s"
