@@ -18,13 +18,15 @@ type ClusterManager interface {
 
 // ClusterManagerImpl implements ClusterManager interface
 type ClusterManagerImpl struct {
-	nodes           map[string]Node
-	shardManager    ShardManager
-	healthChecker   HealthChecker
-	failureDetector *FailureDetector
-	gossipProtocol  *GossipProtocol
-	client          *http.Client
-	mu              sync.RWMutex
+	nodes            map[string]Node
+	shardManager     ShardManager
+	healthChecker    HealthChecker
+	failureDetector  *FailureDetector
+	gossipProtocol   *GossipProtocol
+	client           *http.Client
+	mu               sync.RWMutex
+	discoveryManager *DiscoveryManager
+	swimGossip       *SwimGossip
 }
 
 // NewClusterManager creates a new ClusterManagerImpl instance
@@ -38,6 +40,119 @@ func NewClusterManager(shardManager ShardManager, healthChecker HealthChecker, f
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+	}
+}
+
+// NewClusterManagerWithDiscovery creates a new ClusterManagerImpl with etcd discovery
+func NewClusterManagerWithDiscovery(self Node, shardManager ShardManager, healthChecker HealthChecker) (*ClusterManagerImpl, error) {
+	// Initialize failure detector
+	failureDetector := NewFailureDetector(defaultHeartbeatInterval, defaultFailureThreshold)
+
+	// Initialize discovery manager
+	discoveryManager := NewDiscoveryManager(self)
+
+	// Create cluster manager
+	cm := &ClusterManagerImpl{
+		nodes:            make(map[string]Node),
+		shardManager:     shardManager,
+		healthChecker:    healthChecker,
+		failureDetector:  failureDetector,
+		discoveryManager: discoveryManager,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+
+	// Set the cluster manager in the discovery manager
+	discoveryManager.SetClusterManager(cm)
+
+	// Load initial nodes from environment
+	if err := discoveryManager.LoadNodesFromEnv(); err != nil {
+		return nil, err
+	}
+
+	return cm, nil
+}
+
+// NewClusterManagerWithSwim creates a new ClusterManagerImpl with SWIM gossip
+func NewClusterManagerWithSwim(self Node, shardManager ShardManager, healthChecker HealthChecker) (*ClusterManagerImpl, error) {
+	// Initialize failure detector
+	failureDetector := NewFailureDetector(defaultHeartbeatInterval, defaultFailureThreshold)
+
+	// Initialize SWIM gossip
+	swimGossip, err := NewSwimGossip(self)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SWIM gossip: %v", err)
+	}
+
+	// Create cluster manager
+	cm := &ClusterManagerImpl{
+		nodes:           make(map[string]Node),
+		shardManager:    shardManager,
+		healthChecker:   healthChecker,
+		failureDetector: failureDetector,
+		swimGossip:      swimGossip,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+
+	// Set the cluster manager in the SWIM gossip
+	swimGossip.SetClusterManager(cm)
+
+	return cm, nil
+}
+
+// StartDiscovery starts the etcd-based discovery service
+func (cm *ClusterManagerImpl) StartDiscovery(ctx context.Context, config DiscoveryConfig) error {
+	if cm.discoveryManager == nil {
+		return fmt.Errorf("discovery manager not initialized")
+	}
+
+	// Connect to etcd
+	if err := cm.discoveryManager.ConnectToEtcd(config); err != nil {
+		return err
+	}
+
+	// Register self with etcd
+	if err := cm.discoveryManager.RegisterWithEtcd(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// StartSwim starts the SWIM gossip protocol
+func (cm *ClusterManagerImpl) StartSwim(ctx context.Context, config SwimConfig) error {
+	if cm.swimGossip == nil {
+		return fmt.Errorf("SWIM gossip not initialized")
+	}
+
+	// Set config if provided
+	if config != (SwimConfig{}) {
+		cm.swimGossip.SetConfig(config)
+	}
+
+	// Start SWIM protocol
+	if err := cm.swimGossip.Start(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// StopDiscovery stops the discovery service
+func (cm *ClusterManagerImpl) StopDiscovery(ctx context.Context) error {
+	if cm.discoveryManager != nil {
+		return cm.discoveryManager.StopDiscovery(ctx)
+	}
+	return nil
+}
+
+// StopSwim stops the SWIM gossip protocol
+func (cm *ClusterManagerImpl) StopSwim() {
+	if cm.swimGossip != nil {
+		cm.swimGossip.Stop()
 	}
 }
 

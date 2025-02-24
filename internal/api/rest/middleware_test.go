@@ -1,7 +1,6 @@
 package rest
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -50,30 +49,35 @@ func (m *mockShardManager) GetLocalNodeID() string {
 	return m.currentNodeID
 }
 
-// Add remaining methods for ShardManager interface
+// Add GetNodeAddress method to mockShardManager
 func (m *mockShardManager) GetNodeAddress(nodeID string) string {
 	return m.addresses[nodeID]
 }
 
+// Add GetSuccessors method to mockShardManager
 func (m *mockShardManager) GetSuccessors(nodeID string) []string {
-	return []string{nodeID + "-succ1", nodeID + "-succ2"}
+	return []string{} // Simplified implementation
 }
 
+// Add GetPredecessors method to mockShardManager
 func (m *mockShardManager) GetPredecessors(nodeID string) []string {
-	return []string{nodeID + "-pred1", nodeID + "-pred2"}
+	return []string{} // Simplified implementation
 }
 
+// Add GetResponsibleNodes method to mockShardManager
 func (m *mockShardManager) GetResponsibleNodes(key string) []string {
-	if nodes, ok := m.responsibleNodes[key]; ok {
-		return nodes
+	nodes, exists := m.responsibleNodes[key]
+	if !exists {
+		return []string{m.currentNodeID}
 	}
-	return []string{m.currentNodeID}
+	return nodes
 }
 
+// Add GetSuccessorNodes method to mockShardManager
 func (m *mockShardManager) GetSuccessorNodes(nodeID string, count int) []string {
-	successors := make([]string, 0, count)
-	for i := 0; i < count; i++ {
-		successors = append(successors, fmt.Sprintf("%s-succ%d", nodeID, i+1))
+	successors := m.GetSuccessors(nodeID)
+	if len(successors) > count {
+		return successors[:count]
 	}
 	return successors
 }
@@ -82,6 +86,21 @@ func (m *mockShardManager) GetSuccessorNodes(nodeID string, count int) []string 
 func (m *mockShardManager) HasPrimaryShards() bool {
 	// For testing purposes, return false by default
 	return false
+}
+
+// HasPrimaryShardsForNode checks if a specific node has primary shards
+func (m *mockShardManager) HasPrimaryShardsForNode(nodeID string) bool {
+	for _, nodes := range m.responsibleNodes {
+		if len(nodes) > 0 && nodes[0] == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
+// Add UpdateResponsibleNodes method if it's missing
+func (m *mockShardManager) UpdateResponsibleNodes(key string, nodes []string) {
+	m.responsibleNodes[key] = nodes
 }
 
 // mockHandler is a simple handler for testing

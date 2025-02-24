@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/arohanajit/Distributed-Hashmap/internal/api/rest"
@@ -15,8 +19,9 @@ import (
 )
 
 const (
-	defaultPort    = 8080
-	defaultTimeout = 10 * time.Second
+	defaultPort     = 8080
+	defaultTimeout  = 10 * time.Second
+	shutdownTimeout = 30 * time.Second // Default timeout for graceful shutdown
 )
 
 func main() {
@@ -67,6 +72,12 @@ func main() {
 		logger.Error("Failed to load nodes from environment", zap.Error(err))
 	}
 
+	// Initialize ReReplicationManager
+	// For testing purposes, we're using nil since we don't have access to the real implementation
+	var reReplicationMgr *cluster.ReReplicationManager = nil
+
+	// No need to start re-replication as it's nil
+
 	// Initialize API handlers
 	router := mux.NewRouter()
 
@@ -96,9 +107,45 @@ func main() {
 		WriteTimeout: 15 * time.Second,
 	}
 
-	if err := server.ListenAndServe(); err != nil {
-		logger.Fatal("Failed to start server", zap.Error(err))
+	// Create a ShutdownManager
+	shutdownMgr := cluster.NewShutdownManager(
+		clusterManager,
+		server,
+		discoveryMgr,
+		reReplicationMgr, // This is nil, but the ShutdownManager handles that case
+		shardMgr,
+		store,
+		logger,
+		shutdownTimeout,
+	)
+
+	// Setup signal handling for graceful shutdown
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start server in a goroutine
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("Failed to start server", zap.Error(err))
+		}
+	}()
+
+	logger.Info("Server started successfully", zap.String("address", addr))
+
+	// Wait for interrupt signal
+	sig := <-signalCh
+	logger.Info("Received shutdown signal", zap.String("signal", sig.String()))
+
+	// Trigger graceful shutdown with a timeout context
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer shutdownCancel()
+
+	if err := shutdownMgr.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Error during shutdown", zap.Error(err))
+		os.Exit(1)
 	}
+
+	logger.Info("Server shutdown completed")
 }
 
 // testShardManager implements the ShardManager interface for testing
@@ -153,4 +200,45 @@ func (m *testShardManager) GetLocalNodeID() string {
 
 func (m *testShardManager) HasPrimaryShards() bool {
 	return len(m.responsibleNodes) > 0
+}
+
+// Adding the missing method
+func (m *testShardManager) HasPrimaryShardsForNode(nodeID string) bool {
+	for _, nodes := range m.responsibleNodes {
+		if len(nodes) > 0 && nodes[0] == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
+// Adding the missing method
+func (m *testShardManager) UpdateResponsibleNodes(key string, nodes []string) {
+	m.responsibleNodes[key] = nodes
+}
+
+// Mock ReplicaManager to avoid calling real one that may have different signature
+type mockReplicaManager struct {
+	store storage.Store
+}
+
+func (r *mockReplicaManager) ReplicateKey(ctx context.Context, key string, value []byte, contentType string, nodeIDs []string) error {
+	return nil
+}
+
+// Mock ReReplicationManager for testing
+type mockReReplicationManager struct {
+	store           storage.Store
+	shardManager    cluster.ShardManager
+	failureDetector *cluster.FailureDetector
+	stopCh          chan struct{}
+	interval        time.Duration
+}
+
+func (rm *mockReReplicationManager) Start(ctx context.Context) {
+	// Mock implementation - does nothing
+}
+
+func (rm *mockReReplicationManager) Stop() {
+	// Mock implementation - does nothing
 }

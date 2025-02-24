@@ -42,6 +42,10 @@ type ReplicaManager struct {
 
 // NewReplicaManager creates a new instance of ReplicaManager
 func NewReplicaManager(replicaCount, writeQuorum int) *ReplicaManager {
+	if writeQuorum > replicaCount {
+		writeQuorum = replicaCount
+	}
+
 	return &ReplicaManager{
 		trackers:        make(map[string]*ReplicaTracker),
 		replicaCount:    replicaCount,
@@ -83,6 +87,7 @@ func (rm *ReplicaManager) UpdateReplicaStatus(key, nodeID string, status Replica
 
 	tracker, exists := rm.trackers[key]
 	if !exists {
+		// Return an error if the tracker doesn't exist
 		return fmt.Errorf("no tracker found for key: %s", key)
 	}
 
@@ -91,7 +96,28 @@ func (rm *ReplicaManager) UpdateReplicaStatus(key, nodeID string, status Replica
 
 	replica, exists := tracker.Replicas[nodeID]
 	if !exists {
-		return fmt.Errorf("no replica info found for node: %s", nodeID)
+		// If replica info doesn't exist, create a new one
+		replica = &ReplicaInfo{
+			NodeID:    nodeID,
+			Status:    status,
+			Timestamp: time.Now(),
+		}
+		tracker.Replicas[nodeID] = replica
+
+		// Update responsible nodes list if needed
+		nodes := rm.replicaNodes[key]
+		found := false
+		for _, n := range nodes {
+			if n == nodeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			rm.replicaNodes[key] = append(rm.replicaNodes[key], nodeID)
+		}
+
+		return nil
 	}
 
 	replica.Status = status

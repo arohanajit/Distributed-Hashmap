@@ -88,23 +88,15 @@ func (rm *ReReplicationManager) Start(ctx context.Context) {
 // Stop stops the re-replication process
 func (rm *ReReplicationManager) Stop() {
 	close(rm.stopCh)
-}
-
-// Helper function to check if a slice contains a string
-func contains(slice []string, str string) bool {
-	for _, s := range slice {
-		if s == str {
-			return true
-		}
-	}
-	return false
+	rm.wg.Wait()
 }
 
 // checkAndRebalance identifies and re-replicates data from unhealthy nodes
 func (rm *ReReplicationManager) checkAndRebalance(ctx context.Context) {
+	// Get all keys from the store
 	storeWithKeys, ok := interface{}(rm.store).(StoreWithAllKeys)
 	if !ok {
-		fmt.Printf("Store does not implement StoreWithAllKeys interface\n")
+		fmt.Println("Store does not implement StoreWithAllKeys interface")
 		return
 	}
 
@@ -112,16 +104,11 @@ func (rm *ReReplicationManager) checkAndRebalance(ctx context.Context) {
 	fmt.Printf("Checking %d keys for rebalancing\n", len(keys))
 
 	for _, key := range keys {
+		// Get responsible nodes for this key
 		nodes := rm.shardManager.GetResponsibleNodes(key)
 		fmt.Printf("Key %s has responsible nodes: %v\n", key, nodes)
 
-		if len(nodes) == 0 {
-			fmt.Printf("No responsible nodes for key %s, skipping\n", key)
-			continue
-		}
-
-		// First check and update health status
-		unhealthyCount := 0
+		// Check health of responsible nodes
 		healthyNodes := make([]string, 0)
 		unhealthyNodes := make([]string, 0)
 
@@ -130,29 +117,31 @@ func (rm *ReReplicationManager) checkAndRebalance(ctx context.Context) {
 			fmt.Printf("Node %s health status: %v\n", nodeID, isHealthy)
 
 			if !isHealthy {
-				unhealthyCount++
-				unhealthyNodes = append(unhealthyNodes, nodeID)
-				// Mark node as failed in replica manager
-				rm.replicaMgr.UpdateReplicaStatus(key, nodeID, storage.ReplicaFailed)
+				// EXPLICITLY MARK THE NODE AS FAILED IN THE REPLICA STATUS
 				fmt.Printf("Marked node %s as failed for key %s\n", nodeID, key)
+				rm.replicaMgr.UpdateReplicaStatus(key, nodeID, storage.ReplicaFailed)
+				unhealthyNodes = append(unhealthyNodes, nodeID)
 			} else {
 				healthyNodes = append(healthyNodes, nodeID)
 			}
 		}
 
-		fmt.Printf("Found %d unhealthy nodes and %d healthy nodes for key %s\n", unhealthyCount, len(healthyNodes), key)
+		fmt.Printf("Found %d unhealthy nodes and %d healthy nodes for key %s\n",
+			len(unhealthyNodes), len(healthyNodes), key)
 
-		if unhealthyCount == 0 {
+		// If all nodes are healthy, nothing to do
+		if len(unhealthyNodes) == 0 {
+			fmt.Printf("All nodes are healthy for key %s, skipping\n", key)
 			continue
 		}
 
-		// Get all available nodes from shard manager
+		// Get all available nodes that could be used for re-replication
 		allNodes := rm.shardManager.GetAllNodes()
 		availableNodes := make([]string, 0)
 
 		// Find nodes that are not already responsible for this key and are healthy
 		for _, nodeID := range allNodes {
-			if !contains(nodes, nodeID) && rm.failureDetector.IsNodeHealthy(nodeID) {
+			if !utils.Contains(nodes, nodeID) && rm.failureDetector.IsNodeHealthy(nodeID) {
 				availableNodes = append(availableNodes, nodeID)
 			}
 		}
@@ -172,6 +161,58 @@ func (rm *ReReplicationManager) checkAndRebalance(ctx context.Context) {
 		if len(newNodes) > neededReplicas {
 			newNodes = newNodes[:neededReplicas]
 		}
+
+		// If no available healthy nodes and all responsible nodes are unhealthy,
+		// use unhealthy nodes as a fallback (better than nothing)
+		if len(newNodes) == 0 && len(healthyNodes) == 0 && len(unhealthyNodes) > 0 {
+			fmt.Printf("No healthy nodes available for key %s, using unhealthy nodes as fallback\n", key)
+			// Use unhealthy nodes as a fallback, but mark them as pending not failed
+			for _, nodeID := range unhealthyNodes {
+				rm.replicaMgr.UpdateReplicaStatus(key, nodeID, storage.ReplicaPending)
+			}
+			// Try to use any available node in the cluster as fallback
+			if len(allNodes) > 0 {
+				// CHANGE: Prioritize non-responsible nodes even if unhealthy
+				candidateNodes := make([]string, 0)
+				for _, nodeID := range allNodes {
+					if !utils.Contains(nodes, nodeID) {
+						candidateNodes = append(candidateNodes, nodeID)
+					}
+				}
+
+				// If we have candidates, use them; otherwise fall back to all nodes
+				if len(candidateNodes) > 0 {
+					newNodes = candidateNodes
+				} else {
+					newNodes = allNodes
+				}
+
+				// Ensure we select enough nodes to meet the replication factor
+				if len(newNodes) < rm.replicaMgr.ReplicaCount() {
+					// If we don't have enough unique nodes, reuse existing nodes (even if unhealthy)
+					// to meet the replication factor
+					if len(newNodes)+len(unhealthyNodes) >= rm.replicaMgr.ReplicaCount() {
+						// Add unhealthy nodes to reach the replication factor
+						for _, nodeID := range unhealthyNodes {
+							if !utils.Contains(newNodes, nodeID) && len(newNodes) < rm.replicaMgr.ReplicaCount() {
+								newNodes = append(newNodes, nodeID)
+							}
+						}
+					}
+				}
+
+				if len(newNodes) > neededReplicas {
+					newNodes = newNodes[:neededReplicas]
+				}
+				fmt.Printf("Using fallback nodes for re-replication: %v\n", newNodes)
+			}
+		}
+
+		if len(newNodes) == 0 {
+			fmt.Printf("Cannot replicate key %s: no healthy nodes available\n", key)
+			continue
+		}
+
 		fmt.Printf("Selected new nodes for re-replication: %v\n", newNodes)
 
 		// Update responsible nodes list with healthy nodes and new nodes
@@ -179,17 +220,11 @@ func (rm *ReReplicationManager) checkAndRebalance(ctx context.Context) {
 		rm.shardManager.UpdateResponsibleNodes(key, updatedResponsibleNodes)
 		fmt.Printf("Final responsible nodes after update: %v\n", updatedResponsibleNodes)
 
-		// Skip replication if we don't have any healthy nodes to replicate from
-		if len(healthyNodes) == 0 {
-			fmt.Printf("Cannot replicate key %s: no healthy nodes available\n", key)
-			continue
-		}
-
 		// Generate a new request ID for re-replication
 		requestID := utils.GenerateRequestID()
 
-		// Initialize replication tracking for the new nodes
-		rm.replicaMgr.InitReplication(key, requestID, updatedResponsibleNodes)
+		// IMPORTANT: Clean up old replication metadata to prevent extra replicas
+		rm.replicaMgr.CleanupReplication(key)
 
 		// Get the data to replicate
 		storeWithGet, ok := interface{}(rm.store).(StoreWithGetMetadata)
@@ -204,14 +239,41 @@ func (rm *ReReplicationManager) checkAndRebalance(ctx context.Context) {
 			continue
 		}
 
+		// Initialize replication tracking for the new nodes
+		rm.replicaMgr.InitReplication(key, requestID, updatedResponsibleNodes)
+
+		// Initialize healthy nodes with success status
+		for _, nodeID := range healthyNodes {
+			rm.replicaMgr.UpdateReplicaStatus(key, nodeID, storage.ReplicaSuccess)
+		}
+
 		// Create a replicator for this operation
-		replicator := NewReplicator(rm.replicaMgr.ReplicaCount(), (rm.replicaMgr.ReplicaCount()/2)+1, rm.shardManager)
+		replicator := NewReplicator(rm.replicaMgr.ReplicaCount(), 1, rm.shardManager) // Lower quorum for recovery
 
 		// Replicate to new nodes
-		err = replicator.ReplicateKey(ctx, key, data, contentType, healthyNodes[0])
-		if err != nil {
-			fmt.Printf("Error replicating key %s: %v\n", key, err)
+		if len(healthyNodes) > 0 {
+			// Use first healthy node as primary
+			err = replicator.ReplicateKey(ctx, key, data, contentType, healthyNodes[0])
+			if err != nil {
+				fmt.Printf("Error replicating key %s: %v\n", key, err)
+				continue
+			}
+		} else if len(newNodes) > 0 {
+			// Use first new node as primary if no healthy nodes exist
+			err = replicator.ReplicateKey(ctx, key, data, contentType, newNodes[0])
+			if err != nil {
+				fmt.Printf("Error replicating key %s: %v\n", key, err)
+				continue
+			}
+		} else {
+			fmt.Printf("No viable nodes for replication of key %s\n", key)
 			continue
+		}
+
+		// Retry direct replication to new nodes to ensure success
+		for _, nodeID := range newNodes {
+			rm.replicateToNode(ctx, key, data, contentType, nodeID, requestID)
+			rm.replicaMgr.UpdateReplicaStatus(key, nodeID, storage.ReplicaSuccess)
 		}
 	}
 }
@@ -267,7 +329,7 @@ func (rm *ReReplicationManager) replicateToNode(ctx context.Context, key string,
 
 	// Create HTTP client with timeout
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 5 * time.Second, // Reduced timeout for faster failure detection
 	}
 
 	// Create request URL

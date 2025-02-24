@@ -23,21 +23,12 @@ run_test() {
     local description=$3
     local output
     local status
-    local timeout_sec=30
     
     echo -e "\n${YELLOW}Running: ${NC}$description"
     
-    # Cross-platform timeout implementation
-    # Use perl for the timeout mechanism (available on most systems)
-    output=$(perl -e "alarm $timeout_sec; exec '$command';" 2>&1)
+    # Run the command and capture both output and exit status
+    output=$($command 2>&1)
     status=$?
-    
-    # If the status is 142 or 137, it likely means the command was terminated due to timeout
-    if [ $status -eq 142 ] || [ $status -eq 137 ]; then
-        echo -e "${RED}✗${NC} $description"
-        echo -e "${YELLOW}Test timed out after $timeout_sec seconds${NC}"
-        return 1
-    fi
     
     if [ $expected_success = true ]; then
         # For positive tests (expecting success)
@@ -127,27 +118,21 @@ main() {
 
     # Test Config and Utility Components
     echo -e "\n${GREEN}=== Testing Config and Utility Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS ./internal/config/..." true "Configuration Components" || echo -e "${YELLOW}Configuration tests failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS ./internal/utils/..." true "Utility Components" || echo -e "${YELLOW}Utility tests failed, but continuing with other tests${NC}"
+    run_test "go test $GO_TEST_FLAGS ./internal/config/..." true "Configuration Components" || exit 1
+    run_test "go test $GO_TEST_FLAGS ./internal/utils/..." true "Utility Components" || exit 1
 
     # Test Storage Components
     echo -e "\n${GREEN}=== Testing Storage Components ===${NC}"
-    
-    # Skip the problematic TestHintedHandoff_ConcurrentOperations test that causes hanging
-    # and continue despite test failures in storage components
-    run_test "go test $GO_TEST_FLAGS -skip TestHintedHandoff_ConcurrentOperations ./internal/storage/..." true "Storage Components" || echo -e "${YELLOW}Some storage tests failed, but continuing with other tests${NC}"
-    
-    # COMPLETELY SKIP the concurrent handoff test - not even attempting to run it
-    echo -e "\n${YELLOW}Skipping TestHintedHandoff_ConcurrentOperations test (known to cause issues)${NC}"
+    run_test "go test $GO_TEST_FLAGS ./internal/storage/..." true "Storage Components" || exit 1
    
     # Test API Components
     echo -e "\n${GREEN}=== Testing API Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS ./internal/api/..." true "API Components" || echo -e "${YELLOW}API tests failed, but continuing with other tests${NC}"
+    run_test "go test $GO_TEST_FLAGS ./internal/api/..." true "API Components" || exit 1
     
     # Test Basic Discovery Components
     echo -e "\n${GREEN}=== Testing Basic Discovery Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestDiscoveryManager_LoadNodes ./internal/cluster/..." true "Load Nodes from Environment" || echo -e "${YELLOW}Load Nodes test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestDiscoveryManager_AddRemoveNode ./internal/cluster/..." true "Add/Remove Node" || echo -e "${YELLOW}Add/Remove Node test failed, but continuing with other tests${NC}"
+    run_test "go test $GO_TEST_FLAGS -run TestDiscoveryManager_LoadNodes ./internal/cluster/..." true "Load Nodes from Environment" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestDiscoveryManager_AddRemoveNode ./internal/cluster/..." true "Add/Remove Node" || exit 1
     
     # Test SWIM Gossip Protocol
     echo -e "\n${GREEN}=== Testing SWIM Gossip Protocol ===${NC}"
@@ -185,41 +170,41 @@ main() {
     
     # Test Cluster Management Components
     echo -e "\n${GREEN}=== Testing Cluster Management Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestClusterManager_JoinLeave ./internal/cluster/..." true "Cluster Join/Leave" || echo -e "${YELLOW}Cluster Join/Leave test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestClusterManager_NodeMapping ./internal/cluster/..." true "Cluster Node Mapping" || echo -e "${YELLOW}Cluster Node Mapping test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestClusterManager_MembershipChange ./internal/cluster/..." true "Cluster Membership Changes" || echo -e "${YELLOW}Cluster Membership Changes test failed, but continuing with other tests${NC}"
+    run_test "go test $GO_TEST_FLAGS -run TestClusterManager_JoinLeave ./internal/cluster/..." true "Cluster Join/Leave" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestClusterManager_NodeMapping ./internal/cluster/..." true "Cluster Node Mapping" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestClusterManager_MembershipChange ./internal/cluster/..." true "Cluster Membership Changes" || exit 1
     
     # Test Replication Components
     echo -e "\n${GREEN}=== Testing Replication Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_BasicReplication ./internal/cluster/..." true "Basic Replication" || echo -e "${YELLOW}Basic Replication test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_BasicReplicationFlow ./internal/cluster/..." true "Basic Replication Flow" || echo -e "${YELLOW}Basic Replication Flow test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_QuorumHandling ./internal/cluster/..." true "Quorum Handling" || echo -e "${YELLOW}Quorum Handling test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_Conflict ./internal/cluster/..." true "Conflict Resolution" || echo -e "${YELLOW}Conflict Resolution test failed, but continuing with other tests${NC}"
+    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_BasicReplication ./internal/cluster/..." true "Basic Replication" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_BasicReplicationFlow ./internal/cluster/..." true "Basic Replication Flow" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_QuorumHandling ./internal/cluster/..." true "Quorum Handling" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_Conflict ./internal/cluster/..." true "Conflict Resolution" || exit 1
     
     # Test Re-Replication Components
     echo -e "\n${GREEN}=== Testing Re-Replication Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_BasicReplication ./internal/cluster/..." true "Basic Re-Replication" || echo -e "${YELLOW}Basic Re-Replication test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_BasicReplicationFlow ./internal/cluster/..." true "Basic Re-Replication Flow" || echo -e "${YELLOW}Basic Re-Replication Flow test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_QuorumHandling ./internal/cluster/..." true "Re-Replication Quorum Handling" || echo -e "${YELLOW}Re-Replication Quorum Handling test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_NodeFailure ./internal/cluster/..." true "Re-Replication Node Failure" || echo -e "${YELLOW}Re-Replication Node Failure test failed, but continuing with other tests${NC}"
+    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_BasicReplication ./internal/cluster/..." true "Basic Re-Replication" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_BasicReplicationFlow ./internal/cluster/..." true "Basic Re-Replication Flow" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_QuorumHandling ./internal/cluster/..." true "Re-Replication Quorum Handling" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_NodeFailure ./internal/cluster/..." true "Re-Replication Node Failure" || exit 1
 
     # Test Shard Management Components
     echo -e "\n${GREEN}=== Testing Shard Management Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestShardManager ./internal/cluster/..." true "Shard Management" || echo -e "${YELLOW}Shard Management test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestShardManager_Rebalance ./internal/cluster/..." true "Shard Rebalancing" || echo -e "${YELLOW}Shard Rebalancing test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestShardManager_KeyMapping ./internal/cluster/..." true "Key to Shard Mapping" || echo -e "${YELLOW}Key to Shard Mapping test failed, but continuing with other tests${NC}"
+    run_test "go test $GO_TEST_FLAGS -run TestShardManager ./internal/cluster/..." true "Shard Management" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestShardManager_Rebalance ./internal/cluster/..." true "Shard Rebalancing" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestShardManager_KeyMapping ./internal/cluster/..." true "Key to Shard Mapping" || exit 1
 
     # Test Failure Detection Components
     echo -e "\n${GREEN}=== Testing Failure Detection Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_NodeFailureAndRecovery ./internal/cluster/..." true "Node Failure and Recovery" || echo -e "${YELLOW}Node Failure and Recovery test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_CascadingFailures ./internal/cluster/..." true "Cascading Failures" || echo -e "${YELLOW}Cascading Failures test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_NetworkPartition ./internal/cluster/..." true "Network Partition" || echo -e "${YELLOW}Network Partition test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_FalsePositives ./internal/cluster/..." true "False Positive Handling" || echo -e "${YELLOW}False Positive Handling test failed, but continuing with other tests${NC}"
+    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_NodeFailureAndRecovery ./internal/cluster/..." true "Node Failure and Recovery" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_CascadingFailures ./internal/cluster/..." true "Cascading Failures" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_NetworkPartition ./internal/cluster/..." true "Network Partition" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_FalsePositives ./internal/cluster/..." true "False Positive Handling" || exit 1
     
     # Test Health Check Components
     echo -e "\n${GREEN}=== Testing Health Check Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestHealthCheck ./internal/cluster/..." true "Basic Health Checks" || echo -e "${YELLOW}Basic Health Checks test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestHTTPHealthChecker ./internal/cluster/..." true "HTTP Health Checker" || echo -e "${YELLOW}HTTP Health Checker test failed, but continuing with other tests${NC}"
+    run_test "go test $GO_TEST_FLAGS -run TestHealthCheck ./internal/cluster/..." true "Basic Health Checks" || exit 1
+    run_test "go test $GO_TEST_FLAGS -run TestHTTPHealthChecker ./internal/cluster/..." true "HTTP Health Checker" || exit 1
     
     # Test Graceful Shutdown Components
     echo -e "\n${GREEN}=== Testing Graceful Shutdown Components ===${NC}"
@@ -271,7 +256,7 @@ main() {
     
     # Run all cluster tests to make sure everything works together
     echo -e "\n${GREEN}=== Testing All Cluster Components Together ===${NC}"
-    run_test "go test $GO_TEST_FLAGS ./internal/cluster/..." true "All Cluster Tests" || echo -e "${YELLOW}Some cluster tests failed, but completing test run${NC}"
+    run_test "go test $GO_TEST_FLAGS ./internal/cluster/..." true "All Cluster Tests" || exit 1
 
     # Run integration tests if environment supports it
     echo -e "\n${GREEN}=== Running Integration Tests (if supported) ===${NC}"
@@ -284,8 +269,8 @@ main() {
     # Cleanup test environment
     cleanup_test_env
 
-    echo -e "\n${GREEN}All tests completed!${NC}"
+    echo -e "\n${GREEN}All tests completed successfully!${NC}"
 }
 
 # Run main function
-main 
+main main

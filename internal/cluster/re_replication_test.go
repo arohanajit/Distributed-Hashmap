@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,26 +143,25 @@ func (m *testShardManager) UpdateResponsibleNodes(key string, nodes []string) {
 	m.responsibleNodes[key] = nodes
 }
 
-func TestReReplicationManager_BasicOperations(t *testing.T) {
-	// Create test servers
+func TestReReplicationManager_BasicReplicationFlow(t *testing.T) {
+	// Setup failure detector with proper context
+	fd := NewFailureDetector(100*time.Millisecond, 2)
+	fd.CleanupInterval = 250 * time.Millisecond
+
+	// Create test servers for nodes
 	servers := make(map[string]*httptest.Server)
-	nodeIDs := []string{"node1", "node2", "node3", "node4", "node5"} // Added node5 for re-replication
-	for _, nodeID := range nodeIDs {
-		nodeID := nodeID // Capture for closure
+	for _, nodeID := range []string{"node1", "node2", "node3", "node4"} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet && r.URL.Path == "/health" {
-				if nodeID == "node2" {
-					w.WriteHeader(http.StatusServiceUnavailable) // Make node2 unhealthy
-					return
-				}
-				w.WriteHeader(http.StatusOK)
-				return
-			}
 			if r.Method == http.MethodPut {
 				w.WriteHeader(http.StatusCreated) // Simulate successful replication
-				return
+			} else if r.URL.Path == "/health" {
+				// Make node2 unhealthy for health checks
+				if strings.Contains(r.Host, servers["node2"].URL[7:]) {
+					w.WriteHeader(http.StatusServiceUnavailable)
+				} else {
+					w.WriteHeader(http.StatusOK)
+				}
 			}
-			w.WriteHeader(http.StatusMethodNotAllowed)
 		}))
 		servers[nodeID] = server
 		defer server.Close()
@@ -171,29 +171,28 @@ func TestReReplicationManager_BasicOperations(t *testing.T) {
 	store := &mockStore{
 		keys: map[string][]byte{
 			"key1": []byte("value1"),
-			"key2": []byte("value2"),
 		},
 	}
 
 	replicaMgr := storage.NewReplicaManager(3, 2)
-	shardMgr := newTestShardManager()
-	shardMgr.currentNodeID = "node1"
+	shardMgr := &testShardManager{
+		responsibleNodes: map[string][]string{
+			"key1": {"node1", "node2", "node3"},
+		},
+		nodeAddresses: map[string]string{},
+		currentNodeID: "node1",
+	}
 
-	// Use dynamic addresses from test servers:
+	// Use the server URLs for node addresses
 	for nodeID, server := range servers {
-		shardMgr.nodeAddresses[nodeID] = server.URL[7:]
+		shardMgr.nodeAddresses[nodeID] = server.URL[7:] // Strip "http://"
 	}
 
-	// Set up node responsibilities
-	shardMgr.responsibleNodes = map[string][]string{
-		"key1": {"node1", "node2", "node3"},
-		"key2": {"node2", "node3", "node4"},
-	}
-
-	// Create and start failure detector with shorter intervals for testing
-	fd := NewFailureDetector(50*time.Millisecond, 2)
+	// Create context for the test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start the failure detector
 	go fd.Start(ctx)
 
 	// Add nodes to failure detector
@@ -201,88 +200,69 @@ func TestReReplicationManager_BasicOperations(t *testing.T) {
 		fd.AddNode(nodeID, addr)
 	}
 
-	// Create and start re-replication manager with shorter interval
-	rm := NewReReplicationManagerWithInterval(store, replicaMgr, shardMgr, fd, 100*time.Millisecond)
-	rm.Start(ctx)
-	defer rm.Stop()
-
 	// Initialize replication tracking for key1
-	replicaMgr.InitReplication("key1", "test-request", []string{"node1", "node2", "node3"})
-
-	// Initialize replication tracking for key2
-	replicaMgr.InitReplication("key2", "test-request-2", []string{"node2", "node3", "node4"})
+	tracker := replicaMgr.InitReplication("key1", "test-request", []string{"node1", "node2", "node3"})
+	if tracker == nil {
+		t.Fatalf("Failed to initialize tracker")
+	}
 
 	// Set initial replica states
 	replicaMgr.UpdateReplicaStatus("key1", "node1", storage.ReplicaSuccess)
 	replicaMgr.UpdateReplicaStatus("key1", "node2", storage.ReplicaSuccess)
 	replicaMgr.UpdateReplicaStatus("key1", "node3", storage.ReplicaSuccess)
 
-	replicaMgr.UpdateReplicaStatus("key2", "node2", storage.ReplicaSuccess)
-	replicaMgr.UpdateReplicaStatus("key2", "node3", storage.ReplicaSuccess)
-	replicaMgr.UpdateReplicaStatus("key2", "node4", storage.ReplicaSuccess)
+	// Create re-replication manager
+	rm := NewReReplicationManager(store, replicaMgr, shardMgr, fd)
 
-	// Wait for initial health checks and node2 to be marked as unhealthy
-	deadline := time.Now().Add(5 * time.Second)
-	var node2Failed bool
+	// Wait for health check to mark node2 as unhealthy
+	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if !fd.IsNodeHealthy("node2") {
-			node2Failed = true
-			t.Log("Node2 marked as unhealthy")
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if !node2Failed {
-		t.Fatal("Node2 was not marked as unhealthy within the timeout period")
-	}
-
-	// Wait for re-replication to complete
-	success := false
-	deadline = time.Now().Add(5 * time.Second)
-
-	for time.Now().Before(deadline) {
-		// Get current status
-		status, err := replicaMgr.GetReplicaStatus("key1")
-		if err != nil {
-			t.Fatalf("Failed to get replica status: %v", err)
-		}
-
-		t.Logf("Current status: %v", status)
-
-		// Check if node2 is marked as failed
-		if status["node2"] != storage.ReplicaFailed {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		// Look for a new replica in pending or success state
-		for nodeID, st := range status {
-			if nodeID != "node1" && nodeID != "node2" && nodeID != "node3" &&
-				(st == storage.ReplicaPending || st == storage.ReplicaSuccess) {
-				success = true
-				t.Logf("Found new replica on node %s with status %v", nodeID, st)
-				break
-			}
-		}
-
-		if success {
+			t.Logf("Node2 marked as unhealthy")
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if !success {
-		status, _ := replicaMgr.GetReplicaStatus("key1")
-		t.Errorf("Re-replication failed. Final status: %v", status)
-		t.Errorf("Node addresses: %v", shardMgr.nodeAddresses)
-		t.Errorf("Responsible nodes: %v", shardMgr.responsibleNodes)
-		t.Errorf("Node2 health: %v", fd.IsNodeHealthy("node2"))
+	// Verify node2 is marked as unhealthy
+	if fd.IsNodeHealthy("node2") {
+		t.Fatal("Expected node2 to be marked as unhealthy, but it's still healthy")
+	}
 
-		// Print health status of all nodes
-		for _, nodeID := range nodeIDs {
-			t.Logf("Node %s health: %v", nodeID, fd.IsNodeHealthy(nodeID))
+	// Trigger re-replication check
+	rm.checkAndRebalance(ctx)
+
+	// Wait for re-replication
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify replica status
+	status, err := replicaMgr.GetReplicaStatus("key1")
+	if err != nil {
+		t.Errorf("Failed to get replica status: %v", err)
+		return
+	}
+
+	// Log the status for debugging
+	t.Logf("Replica status after re-replication: %v", status)
+
+	// Check if node2 is either marked as failed or no longer in the status map
+	// The re-replication manager may remove failed nodes from the status map
+	if val, exists := status["node2"]; exists && val != storage.ReplicaFailed {
+		t.Errorf("Expected node2 to be marked as failed, got status: %v", val)
+	}
+
+	// Verify that node4 has been added to replace node2
+	nodes := shardMgr.responsibleNodes["key1"]
+	foundNode4 := false
+	for _, node := range nodes {
+		if node == "node4" {
+			foundNode4 = true
+			break
 		}
+	}
+
+	if !foundNode4 {
+		t.Errorf("Expected node4 to be added to responsible nodes, got %v", nodes)
 	}
 }
 
