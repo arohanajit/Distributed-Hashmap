@@ -179,6 +179,12 @@ func (rm *ReReplicationManager) checkAndRebalance(ctx context.Context) {
 		rm.shardManager.UpdateResponsibleNodes(key, updatedResponsibleNodes)
 		fmt.Printf("Final responsible nodes after update: %v\n", updatedResponsibleNodes)
 
+		// Skip replication if we don't have any healthy nodes to replicate from
+		if len(healthyNodes) == 0 {
+			fmt.Printf("Cannot replicate key %s: no healthy nodes available\n", key)
+			continue
+		}
+
 		// Generate a new request ID for re-replication
 		requestID := utils.GenerateRequestID()
 
