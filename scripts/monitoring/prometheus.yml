@@ -1,0 +1,53 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+# A scrape configuration containing exactly one endpoint to scrape:
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Scrape configuration for our distributed hashmap nodes
+  - job_name: "dhashmap"
+    metrics_path: /metrics
+    scrape_interval: 5s
+    static_configs:
+      - targets:
+        - "node1:8080"
+        - "node2:8080"
+        - "node3:8080"
+        - "node4:8080"
+        - "node5:8080"
+        labels:
+          group: "dhashmap-cluster"
+
+  # Scrape configuration for Node Exporter
+  - job_name: "node"
+    static_configs:
+      - targets:
+        - "node-exporter:9100"
+        labels:
+          group: "node-metrics"
+
+  # Scrape configuration for cAdvisor
+  - job_name: "cadvisor"
+    static_configs:
+      - targets:
+        - "cadvisor:8080"
+        labels:
+          group: "container-metrics" 

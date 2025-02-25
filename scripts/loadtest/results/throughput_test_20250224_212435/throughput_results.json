@@ -1,0 +1,17 @@
+metric,value
+duration_seconds,5.01
+total_requests,4848
+successful_requests,4848
+failed_requests,0
+read_requests,4848
+write_requests,0
+requests_per_second,967.24
+error_rate,0.00
+min_latency_ms,0.61
+max_latency_ms,137.13
+avg_latency_ms,0.93
+p50_latency_ms,0.82
+p90_latency_ms,0.95
+p95_latency_ms,1.16
+p99_latency_ms,2.03
+status_code_200,4848

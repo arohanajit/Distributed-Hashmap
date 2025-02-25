@@ -20,6 +20,26 @@ build:
 test:
 	$(GOTEST) -v ./...
 
+# Integration test targets
+test-integration:
+	@echo "Running integration tests..."
+	@chmod +x scripts/run_integration_tests.sh
+	@./scripts/run_integration_tests.sh
+
+# Chaos test targets
+test-chaos:
+	@echo "Running chaos tests..."
+	@chmod +x scripts/run_chaos_tests.sh
+	@./scripts/run_chaos_tests.sh
+
+# Run all tests
+test-all: test test-integration test-chaos
+	@echo "All tests completed!"
+
+# Make scripts executable
+scripts-executable:
+	@chmod +x scripts/*.sh
+
 # Clean targets
 clean:
 	$(GOCLEAN)

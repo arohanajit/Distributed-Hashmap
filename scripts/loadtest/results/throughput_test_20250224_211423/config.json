@@ -1,0 +1,12 @@
+{
+  "target_url": "http://localhost:8080",
+  "duration": 10,
+  "threads": 2,
+  "read_ratio": 0.8,
+  "key_count": 1000,
+  "value_size": 1024,
+  "test_type": "throughput",
+  "rps": 1000,
+  "max_keys": 100000,
+  "timestamp": "2025-02-25T02:14:23Z"
+}

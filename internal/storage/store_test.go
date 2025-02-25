@@ -860,6 +860,13 @@ func TestStore_ConcurrentReadWrite(t *testing.T) {
 	key := "concurrent-rw-key"
 	contentType := "text/plain"
 
+	// Initialize the key with a value before starting concurrent operations
+	initialData := []byte("initial-value")
+	err := store.Put(key, initialData, contentType)
+	if err != nil {
+		t.Fatalf("Failed to initialize key: %v", err)
+	}
+
 	// Start multiple writers
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {

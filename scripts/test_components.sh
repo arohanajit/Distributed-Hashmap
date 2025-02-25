@@ -3,289 +3,467 @@
 # Exit on any error
 set -e
 
+# Default settings
+TARGET_URL="http://localhost:8080"
+TEST_TYPE="throughput"
+DURATION=60
+THREADS=10
+READ_RATIO=0.8
+KEY_COUNT=1000
+VALUE_SIZE=1024
+RPS=1000
+MAX_KEYS=100000
+MONITOR_CONTAINERS="dhashmap-node1,dhashmap-node2,dhashmap-node3"
+COMPARE_WITH=""
+SKIP_MONITORING=false
+SKIP_ANALYSIS=false
+OUTPUT_DIR="./results"
+SKIP_PYTHON_DEPS=false
+USE_VENV=true
+
 # Colors for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Change to project root directory
+# Get the script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
-cd "$PROJECT_ROOT"
+VENV_DIR="$SCRIPT_DIR/.venv"
 
-echo -e "${GREEN}Starting component tests...${NC}"
+# Function to display usage information
+function show_usage {
+    echo "Usage: $0 [options]"
+    echo "Options:"
+    echo "  --url URL                  Target URL (default: $TARGET_URL)"
+    echo "  --test-type TYPE           Test type: throughput, stress, or all (default: $TEST_TYPE)"
+    echo "  --duration SECONDS         Test duration in seconds (default: $DURATION)"
+    echo "  --threads COUNT            Number of threads (default: $THREADS)"
+    echo "  --read-ratio RATIO         Read ratio (0.0-1.0, default: $READ_RATIO)"
+    echo "  --key-count COUNT          Number of keys (default: $KEY_COUNT)"
+    echo "  --value-size BYTES         Value size in bytes (default: $VALUE_SIZE)"
+    echo "  --rps COUNT                Requests per second (for throughput test, default: $RPS)"
+    echo "  --max-keys COUNT           Maximum keys (for stress test, default: $MAX_KEYS)"
+    echo "  --monitor-containers LIST  Comma-separated list of containers to monitor (default: $MONITOR_CONTAINERS)"
+    echo "  --output-dir DIR           Output directory (default: $OUTPUT_DIR)"
+    echo "  --compare-with DIR         Compare results with a previous test"
+    echo "  --skip-monitoring          Skip starting the monitoring stack"
+    echo "  --skip-analysis            Skip analyzing the results"
+    echo "  --skip-python-deps         Skip Python dependency installation"
+    echo "  --no-venv                  Don't use a Python virtual environment"
+    echo "  --help                     Show this help message"
+    exit 0
+}
 
-# Function to run tests
-run_test() {
-    local command=$1
-    local expected_success=$2
-    local description=$3
-    local output
-    local status
-    local timeout_sec=30
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --url)
+      TARGET_URL="$2"
+      shift 2
+      ;;
+    --test-type)
+      TEST_TYPE="$2"
+      shift 2
+      ;;
+    --duration)
+      DURATION="$2"
+      shift 2
+      ;;
+    --threads)
+      THREADS="$2"
+      shift 2
+      ;;
+    --read-ratio)
+      READ_RATIO="$2"
+      shift 2
+      ;;
+    --key-count)
+      KEY_COUNT="$2"
+      shift 2
+      ;;
+    --value-size)
+      VALUE_SIZE="$2"
+      shift 2
+      ;;
+    --rps)
+      RPS="$2"
+      shift 2
+      ;;
+    --max-keys)
+      MAX_KEYS="$2"
+      shift 2
+      ;;
+    --monitor-containers)
+      MONITOR_CONTAINERS="$2"
+      shift 2
+      ;;
+    --output-dir)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --compare-with)
+      COMPARE_WITH="$2"
+      shift 2
+      ;;
+    --skip-monitoring)
+      SKIP_MONITORING=true
+      shift
+      ;;
+    --skip-analysis)
+      SKIP_ANALYSIS=true
+      shift
+      ;;
+    --skip-python-deps)
+      SKIP_PYTHON_DEPS=true
+      shift
+      ;;
+    --no-venv)
+      USE_VENV=false
+      shift
+      ;;
+    --help)
+      show_usage
+      ;;
+    *)
+      echo "Unknown option: $1"
+      show_usage
+      ;;
+  esac
+done
+
+# Validate test type
+if [[ "$TEST_TYPE" != "throughput" && "$TEST_TYPE" != "stress" && "$TEST_TYPE" != "all" ]]; then
+    echo -e "${RED}Error: Invalid test type. Must be 'throughput', 'stress', or 'all'.${NC}"
+    exit 1
+fi
+
+# Create output directory
+mkdir -p "$OUTPUT_DIR"
+
+# Function to create and activate a Python virtual environment
+function setup_venv {
+    if [ "$USE_VENV" = false ]; then
+        echo -e "${YELLOW}Skipping virtual environment setup as requested.${NC}"
+        return 0
+    fi
     
-    echo -e "\n${YELLOW}Running: ${NC}$description"
+    echo -e "${BLUE}Setting up Python virtual environment...${NC}"
     
-    # Cross-platform timeout implementation
-    # Use perl for the timeout mechanism (available on most systems)
-    output=$(perl -e "alarm $timeout_sec; exec '$command';" 2>&1)
-    status=$?
-    
-    # If the status is 142 or 137, it likely means the command was terminated due to timeout
-    if [ $status -eq 142 ] || [ $status -eq 137 ]; then
-        echo -e "${RED}✗${NC} $description"
-        echo -e "${YELLOW}Test timed out after $timeout_sec seconds${NC}"
+    # Check if venv module is available
+    if ! python3 -m venv --help &> /dev/null; then
+        echo -e "${RED}Error: Python venv module is not available.${NC}"
+        echo -e "${YELLOW}Please install it or use --no-venv to skip virtual environment setup.${NC}"
         return 1
     fi
     
-    if [ $expected_success = true ]; then
-        # For positive tests (expecting success)
-        if [ $status -eq 0 ]; then
-            echo -e "${GREEN}✓${NC} $description"
-            echo "$output" | grep -E "^ok|^PASS|^=== RUN"
-            return 0
-        else
-            echo -e "${RED}✗${NC} $description"
-            echo -e "${YELLOW}Command output:${NC}\n$output"
-            return 1
-        fi
-    else
-        # For negative tests (expecting failure)
-        if [ $status -ne 0 ]; then
-            echo -e "${GREEN}✓${NC} $description"
-            return 0
-        else
-            echo -e "${RED}✗${NC} $description"
-            echo -e "${YELLOW}Command output:${NC}\n$output"
-            return 1
-        fi
+    # Create virtual environment if it doesn't exist
+    if [ ! -d "$VENV_DIR" ]; then
+        echo -e "${YELLOW}Creating new virtual environment in $VENV_DIR...${NC}"
+        python3 -m venv "$VENV_DIR"
     fi
+    
+    # Activate virtual environment
+    echo -e "${YELLOW}Activating virtual environment...${NC}"
+    source "$VENV_DIR/bin/activate"
+    
+    # Verify activation
+    if [[ "$VIRTUAL_ENV" != "$VENV_DIR" ]]; then
+        echo -e "${RED}Error: Failed to activate virtual environment.${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}Virtual environment is active.${NC}"
+    return 0
 }
 
-# Function to check if etcd is running locally
-check_etcd() {
-    echo -e "${YELLOW}Checking if etcd is running locally...${NC}"
-    if command -v curl >/dev/null 2>&1; then
-        if curl -s http://localhost:2379/health >/dev/null 2>&1; then
-            echo -e "${GREEN}etcd is running, will run etcd integration tests${NC}"
-            export TEST_WITH_ETCD=true
-            export ETCD_ENDPOINTS="localhost:2379"
-            return 0
-        else
-            echo -e "${YELLOW}etcd is not running, skipping etcd integration tests${NC}"
-            export TEST_WITH_ETCD=false
-            return 0
-        fi
-    else
-        echo -e "${YELLOW}curl not found, assuming etcd is not running${NC}"
-        export TEST_WITH_ETCD=false
+# Function to install Python packages
+function install_python_packages {
+    if [ "$SKIP_PYTHON_DEPS" = true ]; then
+        echo -e "${YELLOW}Skipping Python dependency installation as requested.${NC}"
         return 0
     fi
+    
+    local requirements_file="$1"
+    
+    # Set up virtual environment if requested
+    if [ "$USE_VENV" = true ]; then
+        setup_venv || {
+            echo -e "${YELLOW}Failed to set up virtual environment. Trying system installation...${NC}"
+            USE_VENV=false
+        }
+    fi
+    
+    # If we're in a virtual environment, use its pip
+    if [ -n "$VIRTUAL_ENV" ]; then
+        echo -e "${YELLOW}Installing Python packages in virtual environment...${NC}"
+        "$VIRTUAL_ENV/bin/pip" install -r "$requirements_file"
+        return $?
+    fi
+    
+    # Otherwise try system methods
+    # Try pip3 first (most common on systems with Python 3)
+    if command -v pip3 &> /dev/null; then
+        echo -e "${YELLOW}Installing Python packages using pip3...${NC}"
+        pip3 install --user -r "$requirements_file" || pip3 install --break-system-packages -r "$requirements_file"
+        return $?
+    fi
+    
+    # Try pip next
+    if command -v pip &> /dev/null; then
+        echo -e "${YELLOW}Installing Python packages using pip...${NC}"
+        pip install --user -r "$requirements_file" || pip install --break-system-packages -r "$requirements_file"
+        return $?
+    fi
+    
+    # Try python3 -m pip
+    if command -v python3 &> /dev/null; then
+        echo -e "${YELLOW}Installing Python packages using python3 -m pip...${NC}"
+        python3 -m pip install --user -r "$requirements_file" || python3 -m pip install --break-system-packages -r "$requirements_file"
+        return $?
+    fi
+    
+    # Try python -m pip
+    if command -v python &> /dev/null; then
+        echo -e "${YELLOW}Installing Python packages using python -m pip...${NC}"
+        python -m pip install --user -r "$requirements_file" || python -m pip install --break-system-packages -r "$requirements_file"
+        return $?
+    fi
+    
+    # If we get here, we couldn't install packages
+    echo -e "${RED}Error: Could not find pip or an alternative method to install Python packages.${NC}"
+    echo -e "${YELLOW}Please install the following Python packages manually:${NC}"
+    cat "$requirements_file"
+    echo -e "${YELLOW}You can install them using: pip install -r $requirements_file${NC}"
+    
+    # Ask if the user wants to continue anyway
+    read -p "Continue without installing Python packages? (y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+    
+    return 1
 }
 
-# Setup test environment
-setup_test_env() {
-    echo -e "${YELLOW}Setting up test environment...${NC}"
+# Function to check if required tools are installed
+function check_prerequisites {
+    echo -e "${BLUE}Checking prerequisites...${NC}"
     
-    # Create test data directory if needed
-    mkdir -p test_data/hints
-
-    # Export test environment variables
-    export TEST_MODE=true
-    export GO_TEST_FLAGS="-v -count=1"
-    export TEST_WITH_SWIM=true
+    # Check if Go is installed
+    if ! command -v go &> /dev/null; then
+        echo -e "${RED}Error: Go is not installed. Please install Go and try again.${NC}"
+        exit 1
+    fi
     
-    # For SWIM tests with custom ports to avoid conflicts
-    export SWIM_UDP_PORT=27946
-    export SWIM_TCP_PORT=27947
+    # Check if Python is installed
+    if ! command -v python3 &> /dev/null; then
+        if ! command -v python &> /dev/null; then
+            echo -e "${RED}Error: Python is not installed. Please install Python 3 and try again.${NC}"
+            exit 1
+        else
+            # Check if Python is version 3
+            python_version=$(python --version 2>&1)
+            if [[ ! $python_version =~ Python\ 3 ]]; then
+                echo -e "${RED}Error: Python 3 is required. You have $python_version.${NC}"
+                exit 1
+            fi
+        fi
+    fi
     
-    # Check if etcd is running for integration tests
-    check_etcd
-}
-
-# Cleanup test environment
-cleanup_test_env() {
-    echo -e "${YELLOW}Cleaning up test environment...${NC}"
-    rm -rf test_data
-    unset TEST_MODE
-    unset GO_TEST_FLAGS
-    unset TEST_WITH_ETCD
-    unset TEST_WITH_SWIM
-    unset SWIM_UDP_PORT
-    unset SWIM_TCP_PORT
-    unset ETCD_ENDPOINTS
-}
-
-# Main test execution
-main() {
-    # Setup test environment
-    setup_test_env
-
-    # Run tests for all components
-    echo -e "\n${GREEN}=== Testing Components ===${NC}"
-
-    # Test Config and Utility Components
-    echo -e "\n${GREEN}=== Testing Config and Utility Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS ./internal/config/..." true "Configuration Components" || echo -e "${YELLOW}Configuration tests failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS ./internal/utils/..." true "Utility Components" || echo -e "${YELLOW}Utility tests failed, but continuing with other tests${NC}"
-
-    # Test Storage Components
-    echo -e "\n${GREEN}=== Testing Storage Components ===${NC}"
+    # Check if Docker is installed
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Error: Docker is not installed. Please install Docker and try again.${NC}"
+        exit 1
+    fi
     
-    # Skip the problematic TestHintedHandoff_ConcurrentOperations test that causes hanging
-    # and continue despite test failures in storage components
-    run_test "go test $GO_TEST_FLAGS -skip TestHintedHandoff_ConcurrentOperations ./internal/storage/..." true "Storage Components" || echo -e "${YELLOW}Some storage tests failed, but continuing with other tests${NC}"
+    # Check if Docker is running
+    if ! docker info &> /dev/null; then
+        echo -e "${RED}Error: Docker is not running. Please start Docker and try again.${NC}"
+        exit 1
+    fi
     
-    # COMPLETELY SKIP the concurrent handoff test - not even attempting to run it
-    echo -e "\n${YELLOW}Skipping TestHintedHandoff_ConcurrentOperations test (known to cause issues)${NC}"
-   
-    # Test API Components
-    echo -e "\n${GREEN}=== Testing API Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS ./internal/api/..." true "API Components" || echo -e "${YELLOW}API tests failed, but continuing with other tests${NC}"
+    # Check if Docker Compose is installed
+    if ! command -v docker-compose &> /dev/null; then
+        echo -e "${RED}Error: Docker Compose is not installed. Please install Docker Compose and try again.${NC}"
+        exit 1
+    fi
     
-    # Test Basic Discovery Components
-    echo -e "\n${GREEN}=== Testing Basic Discovery Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestDiscoveryManager_LoadNodes ./internal/cluster/..." true "Load Nodes from Environment" || echo -e "${YELLOW}Load Nodes test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestDiscoveryManager_AddRemoveNode ./internal/cluster/..." true "Add/Remove Node" || echo -e "${YELLOW}Add/Remove Node test failed, but continuing with other tests${NC}"
-    
-    # Test SWIM Gossip Protocol
-    echo -e "\n${GREEN}=== Testing SWIM Gossip Protocol ===${NC}"
-    if [ "$TEST_WITH_SWIM" = true ]; then
-        run_test "go test $GO_TEST_FLAGS -run TestSwimGossip ./internal/cluster/..." true "SWIM Gossip Protocol" || echo -e "${YELLOW}SWIM tests may fail if ports are already in use${NC}"
-        
-        # Additional SWIM protocol tests
-        # Test node lifecycle states (alive, suspect, dead)
-        # Use env vars to set custom ports to avoid conflicts
-        run_test "SWIM_UDP_PORT=$SWIM_UDP_PORT SWIM_TCP_PORT=$SWIM_TCP_PORT go test $GO_TEST_FLAGS -run TestSwimNodeState ./internal/cluster/..." true "SWIM Node State Transitions" || echo -e "${YELLOW}SWIM state test may fail if ports are already in use${NC}"
-        
-        # Test full state synchronization
-        run_test "SWIM_UDP_PORT=$((SWIM_UDP_PORT+2)) SWIM_TCP_PORT=$((SWIM_TCP_PORT+2)) go test $GO_TEST_FLAGS -run TestSwimStateSync ./internal/cluster/..." true "SWIM State Synchronization" || echo -e "${YELLOW}SWIM sync tests may fail if ports are already in use${NC}"
-        
-        # Test indirect ping mechanism
-        run_test "SWIM_UDP_PORT=$((SWIM_UDP_PORT+4)) SWIM_TCP_PORT=$((SWIM_TCP_PORT+4)) go test $GO_TEST_FLAGS -run TestSwimIndirectPing ./internal/cluster/..." true "SWIM Indirect Ping Mechanism" || echo -e "${YELLOW}SWIM indirect ping tests may fail if ports are already in use${NC}"
+    # Check if required Python packages are installed
+    if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
+        install_python_packages "$SCRIPT_DIR/requirements.txt"
     else
-        echo -e "${YELLOW}Skipping SWIM tests (TEST_WITH_SWIM not set to true)${NC}"
+        echo -e "${YELLOW}Warning: requirements.txt not found at $SCRIPT_DIR/requirements.txt${NC}"
+        echo -e "${YELLOW}Skipping Python package installation.${NC}"
     fi
     
-    # Test etcd Integration
-    echo -e "\n${GREEN}=== Testing etcd Integration ===${NC}"
-    if [ "$TEST_WITH_ETCD" = true ]; then
-        run_test "go test $GO_TEST_FLAGS -run TestEtcdDiscovery ./internal/cluster/..." true "etcd Integration" || echo -e "${YELLOW}etcd tests may fail if etcd is not properly configured${NC}"
-        
-        # Additional etcd integration tests
-        run_test "ETCD_ENDPOINTS=$ETCD_ENDPOINTS go test $GO_TEST_FLAGS -run TestDiscoveryManager_ConnectEtcd ./internal/cluster/..." true "etcd Connection" || echo -e "${YELLOW}etcd connection tests may fail if etcd is not properly configured${NC}"
-        
-        run_test "ETCD_ENDPOINTS=$ETCD_ENDPOINTS go test $GO_TEST_FLAGS -run TestDiscoveryManager_RegisterEtcd ./internal/cluster/..." true "etcd Registration" || echo -e "${YELLOW}etcd registration tests may fail if etcd is not properly configured${NC}"
-        
-        run_test "ETCD_ENDPOINTS=$ETCD_ENDPOINTS go test $GO_TEST_FLAGS -run TestDiscoveryManager_WatchEtcd ./internal/cluster/..." true "etcd Watch" || echo -e "${YELLOW}etcd watch tests may fail if etcd is not properly configured${NC}"
-    else
-        echo -e "${YELLOW}Skipping etcd tests (etcd not running)${NC}"
-    fi
-    
-    # Test Cluster Management Components
-    echo -e "\n${GREEN}=== Testing Cluster Management Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestClusterManager_JoinLeave ./internal/cluster/..." true "Cluster Join/Leave" || echo -e "${YELLOW}Cluster Join/Leave test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestClusterManager_NodeMapping ./internal/cluster/..." true "Cluster Node Mapping" || echo -e "${YELLOW}Cluster Node Mapping test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestClusterManager_MembershipChange ./internal/cluster/..." true "Cluster Membership Changes" || echo -e "${YELLOW}Cluster Membership Changes test failed, but continuing with other tests${NC}"
-    
-    # Test Replication Components
-    echo -e "\n${GREEN}=== Testing Replication Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_BasicReplication ./internal/cluster/..." true "Basic Replication" || echo -e "${YELLOW}Basic Replication test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_BasicReplicationFlow ./internal/cluster/..." true "Basic Replication Flow" || echo -e "${YELLOW}Basic Replication Flow test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_QuorumHandling ./internal/cluster/..." true "Quorum Handling" || echo -e "${YELLOW}Quorum Handling test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReplicationManager_Conflict ./internal/cluster/..." true "Conflict Resolution" || echo -e "${YELLOW}Conflict Resolution test failed, but continuing with other tests${NC}"
-    
-    # Test Re-Replication Components
-    echo -e "\n${GREEN}=== Testing Re-Replication Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_BasicReplication ./internal/cluster/..." true "Basic Re-Replication" || echo -e "${YELLOW}Basic Re-Replication test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_BasicReplicationFlow ./internal/cluster/..." true "Basic Re-Replication Flow" || echo -e "${YELLOW}Basic Re-Replication Flow test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_QuorumHandling ./internal/cluster/..." true "Re-Replication Quorum Handling" || echo -e "${YELLOW}Re-Replication Quorum Handling test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestReReplicationManager_NodeFailure ./internal/cluster/..." true "Re-Replication Node Failure" || echo -e "${YELLOW}Re-Replication Node Failure test failed, but continuing with other tests${NC}"
-
-    # Test Shard Management Components
-    echo -e "\n${GREEN}=== Testing Shard Management Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestShardManager ./internal/cluster/..." true "Shard Management" || echo -e "${YELLOW}Shard Management test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestShardManager_Rebalance ./internal/cluster/..." true "Shard Rebalancing" || echo -e "${YELLOW}Shard Rebalancing test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestShardManager_KeyMapping ./internal/cluster/..." true "Key to Shard Mapping" || echo -e "${YELLOW}Key to Shard Mapping test failed, but continuing with other tests${NC}"
-
-    # Test Failure Detection Components
-    echo -e "\n${GREEN}=== Testing Failure Detection Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_NodeFailureAndRecovery ./internal/cluster/..." true "Node Failure and Recovery" || echo -e "${YELLOW}Node Failure and Recovery test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_CascadingFailures ./internal/cluster/..." true "Cascading Failures" || echo -e "${YELLOW}Cascading Failures test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_NetworkPartition ./internal/cluster/..." true "Network Partition" || echo -e "${YELLOW}Network Partition test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestFailureDetector_FalsePositives ./internal/cluster/..." true "False Positive Handling" || echo -e "${YELLOW}False Positive Handling test failed, but continuing with other tests${NC}"
-    
-    # Test Health Check Components
-    echo -e "\n${GREEN}=== Testing Health Check Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestHealthCheck ./internal/cluster/..." true "Basic Health Checks" || echo -e "${YELLOW}Basic Health Checks test failed, but continuing with other tests${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestHTTPHealthChecker ./internal/cluster/..." true "HTTP Health Checker" || echo -e "${YELLOW}HTTP Health Checker test failed, but continuing with other tests${NC}"
-    
-    # Test Graceful Shutdown Components
-    echo -e "\n${GREEN}=== Testing Graceful Shutdown Components ===${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestShutdownManager_Shutdown ./internal/cluster/..." true "Basic Shutdown Sequence" || echo -e "${YELLOW}Shutdown tests may fail due to port conflicts${NC}"
-    run_test "go test $GO_TEST_FLAGS -run TestShutdownManager_AlreadyShuttingDown ./internal/cluster/..." true "Multiple Shutdown Calls" || echo -e "${YELLOW}Shutdown tests may fail due to port conflicts${NC}"
-    
-    # Test Service Discovery Integration with Cluster Manager
-    echo -e "\n${GREEN}=== Testing Service Discovery with Cluster Integration ===${NC}"
-    
-    # SWIM Integration with Cluster Manager
-    if [ "$TEST_WITH_SWIM" = true ]; then
-        run_test "SWIM_UDP_PORT=$((SWIM_UDP_PORT+6)) SWIM_TCP_PORT=$((SWIM_TCP_PORT+6)) go test $GO_TEST_FLAGS -run TestNewClusterManagerWithSwim ./internal/cluster/..." true "Create Cluster Manager with SWIM" || echo -e "${YELLOW}SWIM integration tests may fail if ports are already in use${NC}"
-        
-        run_test "SWIM_UDP_PORT=$((SWIM_UDP_PORT+8)) SWIM_TCP_PORT=$((SWIM_TCP_PORT+8)) go test $GO_TEST_FLAGS -run TestClusterManagerWithSwim_StartStop ./internal/cluster/..." true "SWIM Start/Stop" || echo -e "${YELLOW}SWIM start/stop tests may fail if ports are already in use${NC}"
-        
-        run_test "SWIM_UDP_PORT=$((SWIM_UDP_PORT+10)) SWIM_TCP_PORT=$((SWIM_TCP_PORT+10)) go test $GO_TEST_FLAGS -run TestClusterManagerWithSwim_NodeJoinLeave ./internal/cluster/..." true "SWIM Node Join/Leave" || echo -e "${YELLOW}SWIM join/leave tests may fail if ports are already in use${NC}"
-    fi
-    
-    # etcd Integration with Cluster Manager
-    if [ "$TEST_WITH_ETCD" = true ]; then
-        run_test "ETCD_ENDPOINTS=$ETCD_ENDPOINTS go test $GO_TEST_FLAGS -run TestNewClusterManagerWithDiscovery ./internal/cluster/..." true "Create Cluster Manager with etcd Discovery" || echo -e "${YELLOW}etcd integration tests may fail if etcd is not properly configured${NC}"
-        
-        run_test "ETCD_ENDPOINTS=$ETCD_ENDPOINTS go test $GO_TEST_FLAGS -run TestClusterManagerWithDiscovery_StartStop ./internal/cluster/..." true "etcd Discovery Start/Stop" || echo -e "${YELLOW}etcd start/stop tests may fail if etcd is not properly configured${NC}"
-        
-        run_test "ETCD_ENDPOINTS=$ETCD_ENDPOINTS go test $GO_TEST_FLAGS -run TestClusterManagerWithDiscovery_NodeJoinLeave ./internal/cluster/..." true "etcd Node Join/Leave" || echo -e "${YELLOW}etcd join/leave tests may fail if etcd is not properly configured${NC}"
-    fi
-    
-    # Test Discovery Examples
-    echo -e "\n${GREEN}=== Testing Discovery Examples ===${NC}"
-    if [ "$TEST_WITH_ETCD" = true ]; then
-        run_test "ETCD_ENDPOINTS=$ETCD_ENDPOINTS NODE_ID=test NODE_HOST=localhost NODE_PORT=8080 go test $GO_TEST_FLAGS -run TestRunEtcdDiscoveryExample ./internal/cluster/..." true "etcd Discovery Example" || echo -e "${YELLOW}etcd example tests may be skipped if etcd is not running${NC}"
-    fi
-    
-    if [ "$TEST_WITH_SWIM" = true ]; then
-        run_test "SWIM_UDP_PORT=$((SWIM_UDP_PORT+12)) SWIM_TCP_PORT=$((SWIM_TCP_PORT+12)) NODE_ID=test NODE_HOST=localhost NODE_PORT=8080 go test $GO_TEST_FLAGS -run TestRunSwimGossipExample ./internal/cluster/..." true "SWIM Gossip Example" || echo -e "${YELLOW}SWIM example tests may fail if ports are already in use${NC}"
-    fi
-    
-    # Test Discovery with Failure Scenarios
-    echo -e "\n${GREEN}=== Testing Discovery with Failure Scenarios ===${NC}"
-    
-    # Test eventual consistency in membership view
-    if [ "$TEST_WITH_SWIM" = true ]; then
-        run_test "SWIM_UDP_PORT=$((SWIM_UDP_PORT+14)) SWIM_TCP_PORT=$((SWIM_TCP_PORT+14)) go test $GO_TEST_FLAGS -run TestSwimEventualConsistency ./internal/cluster/..." true "SWIM Eventual Consistency" || echo -e "${YELLOW}SWIM consistency tests may fail if ports are already in use${NC}"
-    fi
-    
-    if [ "$TEST_WITH_ETCD" = true ]; then
-        run_test "ETCD_ENDPOINTS=$ETCD_ENDPOINTS go test $GO_TEST_FLAGS -run TestEtcdDiscoveryReconnect ./internal/cluster/..." true "etcd Reconnection Test" || echo -e "${YELLOW}etcd reconnect tests may fail if etcd is not properly configured${NC}"
-    fi
-    
-    # Run all cluster tests to make sure everything works together
-    echo -e "\n${GREEN}=== Testing All Cluster Components Together ===${NC}"
-    run_test "go test $GO_TEST_FLAGS ./internal/cluster/..." true "All Cluster Tests" || echo -e "${YELLOW}Some cluster tests failed, but completing test run${NC}"
-
-    # Run integration tests if environment supports it
-    echo -e "\n${GREEN}=== Running Integration Tests (if supported) ===${NC}"
-    if [ "$TEST_WITH_ETCD" = true ] && [ "$TEST_WITH_SWIM" = true ]; then
-        run_test "ETCD_ENDPOINTS=$ETCD_ENDPOINTS SWIM_UDP_PORT=$((SWIM_UDP_PORT+16)) SWIM_TCP_PORT=$((SWIM_TCP_PORT+16)) go test $GO_TEST_FLAGS -tags=integration ./..." true "Full Integration Tests" || echo -e "${YELLOW}Some integration tests may be skipped based on environment${NC}"
-    else
-        echo -e "${YELLOW}Skipping full integration tests (missing prerequisites)${NC}"
-    fi
-
-    # Cleanup test environment
-    cleanup_test_env
-
-    echo -e "\n${GREEN}All tests completed!${NC}"
+    echo -e "${GREEN}All prerequisites are satisfied.${NC}"
 }
 
-# Run main function
-main 
+# Function to start the monitoring stack
+function start_monitoring {
+    if [ "$SKIP_MONITORING" = true ]; then
+        echo -e "${YELLOW}Skipping monitoring stack startup as requested.${NC}"
+        return
+    fi
+    
+    echo -e "${BLUE}Starting monitoring stack...${NC}"
+    
+    # Make the script executable if it's not already
+    chmod +x "$SCRIPT_DIR/monitoring/start_monitoring.sh"
+    
+    # Start the monitoring stack
+    cd "$SCRIPT_DIR/monitoring"
+    ./start_monitoring.sh
+    
+    echo -e "${GREEN}Monitoring stack started successfully.${NC}"
+    echo -e "Prometheus: http://localhost:9090"
+    echo -e "Grafana: http://localhost:3000 (admin/admin)"
+    echo -e "Node Exporter: http://localhost:9100/metrics"
+    echo -e "cAdvisor: http://localhost:8080"
+}
+
+# Function to analyze test results
+function analyze_results {
+    local test_dir=$1
+    
+    if [ "$SKIP_ANALYSIS" = true ]; then
+        echo -e "${YELLOW}Skipping results analysis as requested.${NC}"
+        return
+    fi
+    
+    echo -e "${BLUE}Analyzing test results...${NC}"
+    
+    # Make the script executable if it's not already
+    chmod +x "$SCRIPT_DIR/loadtest/analyze_results.py"
+    
+    # Run the analysis script
+    cd "$SCRIPT_DIR/loadtest"
+    
+    # If we're using a virtual environment, make sure it's activated
+    if [ "$USE_VENV" = true ] && [ -d "$VENV_DIR" ]; then
+        source "$VENV_DIR/bin/activate"
+    fi
+    
+    if [ -n "$COMPARE_WITH" ]; then
+        ./analyze_results.py --results-dir "$test_dir" --compare-with "$COMPARE_WITH"
+    else
+        ./analyze_results.py --results-dir "$test_dir"
+    fi
+    
+    echo -e "${GREEN}Analysis completed successfully.${NC}"
+    echo -e "Analysis results saved to: ${test_dir}/analysis"
+}
+
+# Function to stop the monitoring stack
+function stop_monitoring {
+    if [ "$SKIP_MONITORING" = true ]; then
+        return
+    fi
+    
+    echo -e "${BLUE}Stopping monitoring stack...${NC}"
+    
+    cd "$SCRIPT_DIR/monitoring"
+    docker-compose -f docker-compose.monitoring.yml down
+    
+    echo -e "${GREEN}Monitoring stack stopped successfully.${NC}"
+}
+
+# Function to clean up
+function cleanup {
+    # Deactivate virtual environment if it was activated
+    if [ -n "$VIRTUAL_ENV" ]; then
+        deactivate 2>/dev/null || true
+    fi
+}
+
+# Set up trap to ensure cleanup happens
+trap cleanup EXIT
+
+# Main function to run the tests
+function run_tests {
+    # Check prerequisites
+    check_prerequisites
+    
+    # Start monitoring
+    start_monitoring
+    
+    # Wait for monitoring to initialize
+    echo -e "${YELLOW}Waiting for monitoring stack to initialize...${NC}"
+    sleep 10
+    
+    # Run the appropriate tests
+    if [ "$TEST_TYPE" = "throughput" ] || [ "$TEST_TYPE" = "all" ]; then
+        # Create output directory for throughput test
+        local timestamp=$(date +"%Y%m%d_%H%M%S")
+        local throughput_dir="${OUTPUT_DIR}/throughput_test_${timestamp}"
+        mkdir -p "$throughput_dir"
+        
+        echo -e "${BLUE}Running throughput test...${NC}"
+        
+        # Build the load test tool
+        cd "$SCRIPT_DIR/loadtest"
+        go build -o loadtest loadtest.go
+        
+        # Get absolute path for output directory
+        local abs_output_path="$(cd "$(dirname "$throughput_dir")" && pwd)/$(basename "$throughput_dir")"
+        
+        # Run throughput test with correct arguments
+        ./loadtest \
+            -url "$TARGET_URL" \
+            -threads "$THREADS" \
+            -duration "${DURATION}s" \
+            -read-ratio "$READ_RATIO" \
+            -keys "$KEY_COUNT" \
+            -value-size "$VALUE_SIZE" \
+            -report-interval "5s" \
+            -output "$abs_output_path/throughput_results.json" \
+            -rps "$RPS"
+        
+        echo -e "${GREEN}Throughput test completed successfully.${NC}"
+        echo -e "Results saved to: ${throughput_dir}"
+        
+        analyze_results "$throughput_dir"
+    fi
+    
+    if [ "$TEST_TYPE" = "stress" ] || [ "$TEST_TYPE" = "all" ]; then
+        # Create output directory for stress test
+        local timestamp=$(date +"%Y%m%d_%H%M%S")
+        local stress_dir="${OUTPUT_DIR}/stress_test_${timestamp}"
+        mkdir -p "$stress_dir"
+        
+        echo -e "${BLUE}Running stress test...${NC}"
+        
+        # Build the stress test tool
+        cd "$SCRIPT_DIR/loadtest"
+        go build -o stress_test stress_test.go
+        
+        # Get absolute path for output directory
+        local abs_output_path="$(cd "$(dirname "$stress_dir")" && pwd)/$(basename "$stress_dir")"
+        
+        # Run stress test with correct arguments
+        ./stress_test \
+            -url "$TARGET_URL" \
+            -threads "$THREADS" \
+            -duration "${DURATION}s" \
+            -keys "$KEY_COUNT" \
+            -value-size "$VALUE_SIZE" \
+            -report-interval "5s" \
+            -output "$abs_output_path/stress_results.json" \
+            -max-keys "$MAX_KEYS"
+        
+        echo -e "${GREEN}Stress test completed successfully.${NC}"
+        echo -e "Results saved to: ${stress_dir}"
+        
+        analyze_results "$stress_dir"
+    fi
+    
+    # Stop monitoring
+    stop_monitoring
+    
+    echo -e "${GREEN}All tests completed successfully!${NC}"
+}
+
+# Run the tests
+run_tests 

@@ -1,0 +1,171 @@
+version: '3.8'
+
+services:
+  # etcd for service discovery
+  etcd:
+    image: bitnami/etcd:latest
+    environment:
+      - ALLOW_NONE_AUTHENTICATION=yes
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    networks:
+      - dhashmap-net
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+
+  # Node 1
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=node1
+      - NODE_HOST=node1
+      - NODE_PORT=8080
+      - ETCD_ENDPOINTS=etcd:2379
+      - REPLICATION_FACTOR=3
+      - SWIM_ENABLED=true
+      - SWIM_UDP_PORT=7946
+      - SWIM_TCP_PORT=7947
+      - SWIM_SEEDS=node1:7947
+    ports:
+      - "8081:8080"
+    networks:
+      - dhashmap-net
+    depends_on:
+      etcd:
+        condition: service_healthy
+    volumes:
+      - node1-data:/app/data
+
+  # Node 2
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=node2
+      - NODE_HOST=node2
+      - NODE_PORT=8080
+      - ETCD_ENDPOINTS=etcd:2379
+      - REPLICATION_FACTOR=3
+      - SWIM_ENABLED=true
+      - SWIM_UDP_PORT=7946
+      - SWIM_TCP_PORT=7947
+      - SWIM_SEEDS=node1:7947
+    ports:
+      - "8082:8080"
+    networks:
+      - dhashmap-net
+    depends_on:
+      - node1
+    volumes:
+      - node2-data:/app/data
+
+  # Node 3
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=node3
+      - NODE_HOST=node3
+      - NODE_PORT=8080
+      - ETCD_ENDPOINTS=etcd:2379
+      - REPLICATION_FACTOR=3
+      - SWIM_ENABLED=true
+      - SWIM_UDP_PORT=7946
+      - SWIM_TCP_PORT=7947
+      - SWIM_SEEDS=node1:7947
+    ports:
+      - "8083:8080"
+    networks:
+      - dhashmap-net
+    depends_on:
+      - node1
+    volumes:
+      - node3-data:/app/data
+
+  # Node 4
+  node4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=node4
+      - NODE_HOST=node4
+      - NODE_PORT=8080
+      - ETCD_ENDPOINTS=etcd:2379
+      - REPLICATION_FACTOR=3
+      - SWIM_ENABLED=true
+      - SWIM_UDP_PORT=7946
+      - SWIM_TCP_PORT=7947
+      - SWIM_SEEDS=node1:7947
+    ports:
+      - "8084:8080"
+    networks:
+      - dhashmap-net
+    depends_on:
+      - node1
+    volumes:
+      - node4-data:/app/data
+
+  # Node 5
+  node5:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ID=node5
+      - NODE_HOST=node5
+      - NODE_PORT=8080
+      - ETCD_ENDPOINTS=etcd:2379
+      - REPLICATION_FACTOR=3
+      - SWIM_ENABLED=true
+      - SWIM_UDP_PORT=7946
+      - SWIM_TCP_PORT=7947
+      - SWIM_SEEDS=node1:7947
+    ports:
+      - "8085:8080"
+    networks:
+      - dhashmap-net
+    depends_on:
+      - node1
+    volumes:
+      - node5-data:/app/data
+
+  # Test runner container
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      - TEST_NODES=node1:8080,node2:8080,node3:8080,node4:8080,node5:8080
+      - ETCD_ENDPOINTS=etcd:2379
+    networks:
+      - dhashmap-net
+    depends_on:
+      - node1
+      - node2
+      - node3
+      - node4
+      - node5
+    volumes:
+      - ./tests:/app/tests
+      - ./test-results:/app/test-results
+
+networks:
+  dhashmap-net:
+    driver: bridge
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
+  node5-data: 

@@ -1,175 +1,141 @@
-# Distributed Hashmap
+# Distributed Hashmap Load Testing Framework
 
-A distributed key-value store implementation in Go, featuring consistent hashing, data replication, fault tolerance, and dynamic service discovery.
+A comprehensive framework for load testing and monitoring a distributed hashmap system.
 
-## Features
+## Overview
 
-- Distributed key-value storage
-- Consistent hashing for data distribution
-- Data replication and fault tolerance
-- REST and gRPC APIs
-- Client libraries in multiple languages
-- Dynamic cluster membership management
-- Service discovery (etcd/Consul integration and SWIM gossip protocol)
-- Failure detection with configurable health checks
+This framework provides tools for:
 
-## Architecture
+1. **Throughput Testing** - Measure the system's ability to handle a consistent load
+2. **Stress Testing** - Push the system beyond its limits to identify breaking points
+3. **System Monitoring** - Track resource usage during tests
+4. **Results Analysis** - Generate reports and visualizations from test data
 
-The system is built with the following components:
+## Directory Structure
 
-- **Storage Layer**: Handles data storage and sharding
-- **Cluster Management**: Manages node discovery and health checking
-- **Service Discovery**: Supports both centralized (etcd/Consul) and decentralized (SWIM gossip) discovery
-- **Replication**: Ensures data redundancy and consistency
-- **Failure Detection**: Detects node failures and initiates recovery
-- **API Layer**: Provides REST and gRPC interfaces
+```
+scripts/
+├── loadtest/                  # Load testing tools
+│   ├── loadtest.go            # Throughput testing tool
+│   ├── stress_test.go         # Stress testing tool
+│   ├── run_load_test.sh       # Script to run load tests
+│   └── analyze_results.py     # Script to analyze test results
+├── monitoring/                # Monitoring tools
+│   ├── system_monitor.py      # System resource monitoring
+│   ├── prometheus.yml         # Prometheus configuration
+│   ├── docker-compose.monitoring.yml  # Monitoring stack
+│   └── start_monitoring.sh    # Script to start monitoring
+└── requirements.txt           # Python dependencies
+```
 
-## Getting Started
+## Prerequisites
 
-### Prerequisites
+- Go 1.16 or later
+- Python 3.6 or later
+- Docker and Docker Compose
+- The distributed hashmap system running and accessible
 
-- Go 1.21 or later
-- Make
-- Docker (optional)
-- etcd (optional, for centralized service discovery)
+## Installation
 
-### Building
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/yourusername/distributed-hashmap.git
+   cd distributed-hashmap
+   ```
+
+2. Install Python dependencies:
+   ```bash
+   pip install -r scripts/requirements.txt
+   ```
+
+3. Make scripts executable:
+   ```bash
+   chmod +x scripts/loadtest/run_load_test.sh
+   chmod +x scripts/monitoring/start_monitoring.sh
+   chmod +x scripts/loadtest/analyze_results.py
+   ```
+
+## Usage
+
+### Start the Monitoring Stack
 
 ```bash
-# Build all components
-make build
-
-# Run tests
-make test
-
-# Clean build artifacts
-make clean
+cd scripts/monitoring
+./start_monitoring.sh
 ```
 
-### Running
+This will start:
+- Prometheus (http://localhost:9090)
+- Grafana (http://localhost:3000)
+- Node Exporter (http://localhost:9100/metrics)
+- cAdvisor (http://localhost:8080)
+
+### Run a Throughput Test
 
 ```bash
-# Start the server with a node-id
-./build/dhashmap-server -node-id "node1"
-
-# Start with etcd discovery
-./build/dhashmap-server -node-id "node1" -discovery "etcd" -etcd-endpoints "localhost:2379"
-
-# Start with SWIM gossip discovery
-./build/dhashmap-server -node-id "node1" -discovery "swim"
-
-# Join an existing cluster with SWIM
-./build/dhashmap-server -node-id "node2" -discovery "swim" -seed-nodes "node1:7946"
-
-# Run the example client (if implemented)
-make run-client
+cd scripts/loadtest
+./run_load_test.sh --test-type throughput --url http://localhost:8080 --duration 300 --threads 20 --rps 5000
 ```
 
-### Docker
+### Run a Stress Test
 
 ```bash
-# Build the Docker image
-docker build -t dhashmap .
-
-# Run the container
-docker run -p 8080:8080 dhashmap
-
-# Run with Docker Compose (for multi-node setup)
-docker-compose up
+cd scripts/loadtest
+./run_load_test.sh --test-type stress --url http://localhost:8080 --duration 600 --threads 50 --max-keys 500000
 ```
 
-## Service Discovery
-
-The system supports two modes of service discovery:
-
-### etcd/Consul Integration
-
-For centralized service discovery, the system can integrate with etcd or Consul. This allows nodes to register themselves and discover other nodes through a central registry.
+### Analyze Test Results
 
 ```bash
-# Start with etcd discovery
-export ETCD_ENDPOINTS="localhost:2379"
-./build/dhashmap-server -node-id "node1" -discovery "etcd"
+cd scripts/loadtest
+./analyze_results.py --results-dir ./results/throughput_test_20230501_120000
 ```
 
-### SWIM Gossip Protocol
-
-For decentralized service discovery, the system implements the SWIM (Scalable Weakly-consistent Infection-style Process Group Membership) gossip protocol. This allows nodes to discover each other without a central registry.
+To compare with a baseline:
 
 ```bash
-# Start the first node
-./build/dhashmap-server -node-id "node1" -discovery "swim"
-
-# Join an existing cluster
-./build/dhashmap-server -node-id "node2" -discovery "swim" -seed-nodes "node1:7946"
+./analyze_results.py --results-dir ./results/throughput_test_20230501_120000 --compare-with ./results/throughput_test_20230430_120000
 ```
 
-## Failure Detection
+## Key Features
 
-The system includes a robust failure detection mechanism that:
+### Throughput Testing
 
-- Monitors node health through regular health checks
-- Detects failed nodes and removes them from the cluster
-- Triggers data re-replication when necessary
-- Supports both direct and indirect (gossip-based) health checks
+- Configurable request rate (RPS)
+- Adjustable read/write ratio
+- Customizable key and value sizes
+- Real-time metrics reporting
 
-## Configuration
+### Stress Testing
 
-Configuration can be done through command-line flags, environment variables, or configuration files:
+- Progressive key insertion
+- Memory usage monitoring
+- Goroutine leak detection
+- System resource tracking
 
-```bash
-# Command-line flags
-./build/dhashmap-server -node-id "node1" -port 8080 -discovery "swim"
+### Monitoring
 
-# Environment variables
-export NODE_ID="node1"
-export PORT="8080" 
-export DISCOVERY_MODE="swim"
-./build/dhashmap-server
+- CPU, memory, disk, and network usage
+- Container-level metrics
+- Custom Grafana dashboards
+- Prometheus metric collection
 
-# Configuration file
-./build/dhashmap-server -config config.yaml
-```
+### Analysis
 
-## API Documentation
+- Performance metrics calculation
+- Visualization of results
+- Comparison with baseline tests
+- Detailed reports generation
 
-API documentation can be found in the `docs` directory.
+## Best Practices
 
-## Development
-
-### Project Structure
-
-```
-.
-├── cmd/                # Command-line applications
-│   ├── client/         # Client CLI
-│   └── server/         # Server application
-├── internal/           # Internal packages
-│   ├── api/            # API handlers
-│   ├── cluster/        # Cluster management
-│   ├── config/         # Configuration
-│   ├── storage/        # Storage implementation
-│   └── utils/          # Utility functions
-├── pkg/                # Public packages for external use
-├── scripts/            # Build and utility scripts
-└── docs/               # Documentation
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-make test
-
-# Run specific component tests
-./scripts/test_components.sh
-
-# Run with etcd integration tests (requires running etcd)
-TEST_WITH_ETCD=true go test ./internal/cluster/...
-
-# Run with SWIM tests
-TEST_WITH_SWIM=true go test ./internal/cluster/...
-```
+1. **Establish Baselines** - Run tests against a known good configuration
+2. **Isolate Variables** - Change one parameter at a time
+3. **Realistic Data** - Use realistic key and value sizes
+4. **Warm-up Period** - Allow the system to warm up before measuring
+5. **Repeat Tests** - Run tests multiple times for consistency
+6. **Monitor Everything** - Collect as much data as possible
+7. **Compare Results** - Compare before and after optimizations
 
 ## Contributing
 

@@ -13,6 +13,7 @@ import (
 	"github.com/arohanajit/Distributed-Hashmap/internal/api/rest"
 	"github.com/arohanajit/Distributed-Hashmap/internal/cluster"
 	"github.com/arohanajit/Distributed-Hashmap/internal/config"
+	"github.com/arohanajit/Distributed-Hashmap/internal/metrics"
 	"github.com/arohanajit/Distributed-Hashmap/internal/storage"
 	"github.com/gorilla/mux"
 	"go.uber.org/zap"
@@ -37,6 +38,9 @@ func main() {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
 	defer logger.Sync()
+
+	// Initialize metrics collector
+	metricsCollector := metrics.NewClusterMetricsCollector()
 
 	// Initialize storage
 	store := storage.NewStore()
@@ -72,6 +76,10 @@ func main() {
 		logger.Error("Failed to load nodes from environment", zap.Error(err))
 	}
 
+	// Update metrics with initial node count
+	initialNodes := shardMgr.GetAllNodes()
+	metricsCollector.UpdateNodeCount(len(initialNodes))
+
 	// Initialize ReReplicationManager
 	// For testing purposes, we're using nil since we don't have access to the real implementation
 	var reReplicationMgr *cluster.ReReplicationManager = nil
@@ -81,11 +89,17 @@ func main() {
 	// Initialize API handlers
 	router := mux.NewRouter()
 
-	// Register key-value operation handlers
+	// Register metrics handler
+	metricsMux := http.NewServeMux()
+	metrics.RegisterMetricsHandler(metricsMux)
+	// Add the metrics endpoint to the main router
+	router.PathPrefix("/metrics").Handler(metricsMux)
+
+	// Register key-value operation handlers with metrics middleware
 	keyHandler := rest.NewKeyHandler(store)
-	router.HandleFunc("/keys/{key}", keyHandler.Put).Methods(http.MethodPut)
-	router.HandleFunc("/keys/{key}", keyHandler.Get).Methods(http.MethodGet)
-	router.HandleFunc("/keys/{key}", keyHandler.Delete).Methods(http.MethodDelete)
+	router.Handle("/keys/{key}", metrics.MetricsMiddleware(http.HandlerFunc(keyHandler.Put))).Methods(http.MethodPut)
+	router.Handle("/keys/{key}", metrics.MetricsMiddleware(http.HandlerFunc(keyHandler.Get))).Methods(http.MethodGet)
+	router.Handle("/keys/{key}", metrics.MetricsMiddleware(http.HandlerFunc(keyHandler.Delete))).Methods(http.MethodDelete)
 
 	// Register cluster management handlers
 	clusterHandler := rest.NewClusterHandler(clusterManager)
@@ -99,6 +113,7 @@ func main() {
 	// Start server
 	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
 	logger.Info("Starting server", zap.String("address", addr))
+	logger.Info("Metrics available at", zap.String("endpoint", "/metrics"))
 
 	server := &http.Server{
 		Addr:         addr,
@@ -132,6 +147,9 @@ func main() {
 
 	logger.Info("Server started successfully", zap.String("address", addr))
 
+	// Start a goroutine to periodically update storage metrics
+	go updateStorageMetrics(store, metrics.GetMetrics(), logger)
+
 	// Wait for interrupt signal
 	sig := <-signalCh
 	logger.Info("Received shutdown signal", zap.String("signal", sig.String()))
@@ -146,6 +164,27 @@ func main() {
 	}
 
 	logger.Info("Server shutdown completed")
+}
+
+// updateStorageMetrics periodically updates storage-related metrics
+func updateStorageMetrics(store storage.Store, metricsInstance *metrics.PrometheusMetrics, logger *zap.Logger) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Update key count metric
+			// Since we don't have GetAllKeys, we'll just use a placeholder value
+			// In a real implementation, you would get the actual key count
+			metricsInstance.SetKeysTotal(0)
+
+			// In a real implementation, you would also update storage bytes used
+			metricsInstance.SetStorageBytesUsed(0)
+
+			logger.Debug("Updated storage metrics")
+		}
+	}
 }
 
 // testShardManager implements the ShardManager interface for testing

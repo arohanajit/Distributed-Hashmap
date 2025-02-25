@@ -1,0 +1,17 @@
+=== System Monitoring Summary ===
+
+Start Time: 2025-02-24T21:16:11.997961
+End Time: 2025-02-24T21:16:23.157027
+Duration: 11.2 seconds
+
+CPU Usage:
+  Min: 40.7%
+  Max: 56.8%
+  Avg: 50.8%
+
+Memory Usage:
+  Min: 0.0%
+  Max: 0.0%
+  Avg: 0.0%
+  Peak: 0.0 MB
+

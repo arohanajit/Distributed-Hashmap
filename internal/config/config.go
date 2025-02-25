@@ -26,6 +26,11 @@ type ServerConfig struct {
 	// Replication settings
 	WriteQuorum       int           `json:"write_quorum"`       // W: Minimum nodes required to acknowledge writes
 	HeartbeatInterval time.Duration `json:"heartbeat_interval"` // Time between node health checks
+
+	// Dynamic scaling settings
+	RebalanceBatchSize int           `json:"rebalance_batch_size"` // Number of keys to transfer per batch
+	GossipInterval     time.Duration `json:"gossip_interval"`      // Time between gossip rounds
+	ShutdownTimeout    time.Duration `json:"shutdown_timeout"`     // Graceful termination window
 }
 
 // DefaultConfig returns a ServerConfig with default values
@@ -42,6 +47,11 @@ func DefaultConfig() *ServerConfig {
 		NodeID:            "",
 		WriteQuorum:       2,               // Default to majority (W = N/2 + 1)
 		HeartbeatInterval: 5 * time.Second, // Default to 5 seconds
+
+		// Default values for dynamic scaling settings
+		RebalanceBatchSize: 100,              // Default to 100 keys per batch
+		GossipInterval:     1 * time.Second,  // Default to 1 second
+		ShutdownTimeout:    30 * time.Second, // Default to 30 seconds
 	}
 }
 
@@ -108,6 +118,25 @@ func LoadConfig() *ServerConfig {
 		}
 	}
 
+	// Load dynamic scaling settings
+	if rebalanceBatchSize := os.Getenv("REBALANCE_BATCH_SIZE"); rebalanceBatchSize != "" {
+		if batchSize, err := strconv.Atoi(rebalanceBatchSize); err == nil {
+			config.RebalanceBatchSize = batchSize
+		}
+	}
+
+	if gossipInterval := os.Getenv("GOSSIP_INTERVAL"); gossipInterval != "" {
+		if interval, err := time.ParseDuration(gossipInterval); err == nil {
+			config.GossipInterval = interval
+		}
+	}
+
+	if shutdownTimeout := os.Getenv("SHUTDOWN_TIMEOUT"); shutdownTimeout != "" {
+		if timeout, err := time.ParseDuration(shutdownTimeout); err == nil {
+			config.ShutdownTimeout = timeout
+		}
+	}
+
 	return config
 }
 
@@ -122,6 +151,19 @@ func (c *ServerConfig) Validate() error {
 	minQuorum := (c.ReplicationFactor / 2) + 1
 	if c.WriteQuorum < minQuorum {
 		c.WriteQuorum = minQuorum
+	}
+
+	// Validate dynamic scaling settings
+	if c.RebalanceBatchSize <= 0 {
+		c.RebalanceBatchSize = 100 // Default to 100 if invalid
+	}
+
+	if c.GossipInterval < 100*time.Millisecond {
+		c.GossipInterval = 1 * time.Second // Minimum 100ms, default to 1s if too low
+	}
+
+	if c.ShutdownTimeout < 1*time.Second {
+		c.ShutdownTimeout = 30 * time.Second // Minimum 1s, default to 30s if too low
 	}
 
 	return nil
